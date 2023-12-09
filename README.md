@@ -1,2 +1,2 @@
-# RansomwareC-
+# RansomwareC#
 Exemple ransomware
